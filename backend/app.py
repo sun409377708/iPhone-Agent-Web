@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import threading
 import queue
 from datetime import datetime
@@ -310,6 +311,43 @@ def delete_test_case(case_id):
     case.is_active = False
     db.session.commit()
     return jsonify({'success': True})
+
+@app.route('/api/config', methods=['GET'])
+def get_config():
+    """获取系统配置"""
+    config_file = os.path.join(os.path.dirname(__file__), '..', 'config.json')
+    
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+                return jsonify({'config': config_data})
+        except Exception as e:
+            print(f"Error reading config: {e}")
+    
+    # 返回默认配置
+    return jsonify({
+        'config': {
+            'apiKey': '',
+            'modelType': 'glm-4',
+            'baseUrl': 'https://open.bigmodel.cn/api/paas/v4',
+            'temperature': 0.7,
+            'maxTokens': 2000
+        }
+    })
+
+@app.route('/api/config', methods=['POST'])
+def save_config():
+    """保存系统配置"""
+    data = request.json
+    config_file = os.path.join(os.path.dirname(__file__), '..', 'config.json')
+    
+    try:
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return jsonify({'success': True, 'message': '配置保存成功'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'配置保存失败: {str(e)}'}), 500
 
 @app.route('/api/test-cases/init', methods=['POST'])
 def init_test_cases():

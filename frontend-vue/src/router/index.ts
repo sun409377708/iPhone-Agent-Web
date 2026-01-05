@@ -15,7 +15,7 @@ const router = createRouter({
     {
       path: '/test-cases',
       name: 'test-cases',
-      component: () => import('../views/DevicesView.vue'),
+      component: () => import('../views/TestCasesView.vue'),
     },
     {
       path: '/history',
@@ -25,7 +25,7 @@ const router = createRouter({
     {
       path: '/settings',
       name: 'settings',
-      component: () => import('../views/AboutView.vue'),
+      component: () => import('../views/SettingsView.vue'),
     },
   ],
 })
