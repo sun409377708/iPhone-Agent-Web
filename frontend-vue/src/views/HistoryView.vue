@@ -57,18 +57,27 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="space-y-6">
-    <div class="flex items-center justify-between">
-      <h1 class="text-3xl font-bold">📊 执行历史</h1>
-      <button
-        @click="loadHistory"
-        :disabled="loading"
-        class="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
-      >
-        <RefreshCw :class="{ 'animate-spin': loading }" class="w-4 h-4" />
-        刷新
-      </button>
+  <div class="h-full bg-gray-50">
+    <!-- 顶部标题栏 -->
+    <div class="bg-white border-b border-gray-200 px-8 py-6">
+      <div class="flex items-center justify-between">
+        <div>
+          <h1 class="text-2xl font-bold text-gray-800">执行历史</h1>
+          <p class="text-sm text-gray-500 mt-1">查看所有任务的执行历史和结果详情</p>
+        </div>
+        <button
+          @click="loadHistory"
+          :disabled="loading"
+          class="flex items-center gap-2 px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 disabled:opacity-50 transition-colors"
+        >
+          <RefreshCw :class="{ 'animate-spin': loading }" class="w-4 h-4" />
+          刷新
+        </button>
+      </div>
     </div>
+
+    <!-- 主内容区 -->
+    <div class="p-8 space-y-6">
 
     <div v-if="loading && history.length === 0" class="text-center py-12">
       <Loader2 class="w-8 h-8 animate-spin mx-auto mb-2 text-primary" />
@@ -123,6 +132,7 @@ onMounted(() => {
           <p class="text-sm text-gray-700 whitespace-pre-wrap">{{ item.result_message }}</p>
         </div>
       </div>
+    </div>
     </div>
   </div>
 </template>
