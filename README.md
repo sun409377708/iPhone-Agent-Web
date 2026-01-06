@@ -21,12 +21,50 @@ Phone-Agent-Web 是一个将 Open-AutoGLM 核心算法能力 Web 化的项目。
 
 ## 🚀 快速启动
 
-### 一键启动（推荐）
+### 1. 启动后端服务
 ```bash
-./start-all.sh
+./start_backend.sh
 ```
 
-启动后访问：**http://localhost:5173**
+后端将运行在：**http://localhost:5001**
+
+### 2. 启动前端（另一个终端）
+```bash
+cd frontend-vue
+npm run dev
+```
+
+前端将运行在：**http://localhost:5173**
+
+### 3. 访问 Web 界面
+打开浏览器访问：**http://localhost:5173**
+
+## 📱 多设备支持
+
+当前版本支持：
+- ✅ **iOS 设备**：通过 WebDriverAgent 完全支持
+- ⚠️ **Android 设备**：设备检测已实现，任务执行功能待实现
+
+### iOS 设备使用步骤
+
+1. **检查环境**（首次使用）
+   ```bash
+   python3 check_wda_setup.py
+   ```
+
+2. **连接设备**
+   - 通过 USB 连接 iOS 设备
+   - 确保设备已信任此电脑
+
+3. **配置 WDA**（首次使用）
+   - 参考 `WDA_SETUP_GUIDE.md` 配置签名
+   - 在 Xcode 中首次手动运行 WDA
+
+4. **使用 Web 界面**
+   - 刷新设备列表
+   - 选择设备（点击设备卡片）
+   - 点击"启动 WDA"按钮
+   - 输入任务指令并执行
 
 ### 一键停止
 ```bash
