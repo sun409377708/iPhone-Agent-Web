@@ -263,22 +263,42 @@ class DeviceManager:
         """启动 iOS 设备的 WebDriverAgent"""
         with self.lock:
             if device_id not in self.devices:
+                print(f"❌ Device {device_id} not found in device list")
                 return False
             
             device = self.devices[device_id]
             if device.platform != 'iOS':
+                print(f"❌ Device {device_id} is not iOS platform")
+                return False
+            
+            # 检查 WDA 项目路径
+            if not os.path.exists(wda_project_path):
+                print(f"❌ WDA project path does not exist: {wda_project_path}")
+                return False
+            
+            xcodeproj_path = os.path.join(wda_project_path, 'WebDriverAgent.xcodeproj')
+            if not os.path.exists(xcodeproj_path):
+                print(f"❌ WebDriverAgent.xcodeproj not found at: {xcodeproj_path}")
                 return False
             
             # 确保 iproxy 已启动
             if not device.local_port:
+                print(f"🔧 Starting iproxy for device {device_id}...")
                 if not self.start_iproxy(device_id):
+                    print(f"❌ Failed to start iproxy for device {device_id}")
                     return False
+                print(f"✅ iproxy started on port {device.local_port}")
             
             device.wda_status = 'starting'
+            print(f"🚀 Starting WDA for device {device_id}...")
         
         # 在后台线程启动 WDA
         def start_wda_thread():
             try:
+                print(f"📱 Launching xcodebuild for device {device_id}...")
+                print(f"   Project: {wda_project_path}/WebDriverAgent.xcodeproj")
+                print(f"   Destination: id={device_id}")
+                
                 # 启动 xcodebuild
                 process = subprocess.Popen(
                     [
@@ -297,17 +317,31 @@ class DeviceManager:
                     device.wda_pid = process.pid
                     device.wda_status = 'running'
                 
-                print(f"Started WDA for {device_id}, PID: {process.pid}")
+                print(f"✅ WDA process started for {device_id}, PID: {process.pid}")
                 
                 # 等待进程结束
-                process.wait()
+                stdout, stderr = process.communicate()
+                returncode = process.returncode
+                
+                if returncode != 0:
+                    print(f"❌ WDA exited with error code {returncode}")
+                    if stderr:
+                        error_msg = stderr.decode('utf-8', errors='ignore')[:500]
+                        print(f"   Error output: {error_msg}")
                 
                 with self.lock:
                     device.wda_status = 'stopped'
                     device.wda_pid = None
                     
+            except FileNotFoundError:
+                print(f"❌ xcodebuild command not found. Please install Xcode Command Line Tools.")
+                with self.lock:
+                    device.wda_status = 'error'
+                    device.wda_pid = None
             except Exception as e:
-                print(f"Error starting WDA: {e}")
+                print(f"❌ Error starting WDA: {e}")
+                import traceback
+                traceback.print_exc()
                 with self.lock:
                     device.wda_status = 'error'
                     device.wda_pid = None

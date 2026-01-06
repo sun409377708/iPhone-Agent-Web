@@ -112,20 +112,35 @@ def start_device_wda(device_id):
     try:
         device = device_manager.get_device(device_id)
         if not device:
+            print(f"❌ Device {device_id} not found")
             return jsonify({'success': False, 'error': 'Device not found'}), 404
         
         if device.platform != 'iOS':
+            print(f"❌ Device {device_id} is not iOS")
             return jsonify({'success': False, 'error': 'WDA only supports iOS devices'}), 400
         
         # 获取 WDA 项目路径
         wda_path = os.path.abspath(os.path.join(current_dir, '..', '..', 'WebDriverAgent'))
+        print(f"🔍 WDA project path: {wda_path}")
+        
+        # 检查路径是否存在
+        if not os.path.exists(wda_path):
+            error_msg = f'WebDriverAgent not found at {wda_path}. Please clone it first.'
+            print(f"❌ {error_msg}")
+            return jsonify({'success': False, 'error': error_msg}), 500
         
         success = device_manager.start_wda(device_id, wda_path)
         if success:
-            return jsonify({'success': True, 'message': 'WDA is starting'})
+            print(f"✅ WDA starting for device {device_id}")
+            return jsonify({'success': True, 'message': 'WDA is starting, please wait...'})
         else:
-            return jsonify({'success': False, 'error': 'Failed to start WDA'}), 500
+            error_msg = 'Failed to start WDA. Check backend logs for details.'
+            print(f"❌ {error_msg}")
+            return jsonify({'success': False, 'error': error_msg}), 500
     except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"❌ Exception in start_device_wda: {error_detail}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/devices/<device_id>/wda/stop', methods=['POST'])
