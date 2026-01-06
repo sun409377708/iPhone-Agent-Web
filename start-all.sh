@@ -23,10 +23,19 @@ echo ""
 
 # 1. 检查并启动 iproxy
 echo -e "${YELLOW}[1/4] 检查 iproxy 端口转发...${NC}"
-IPROXY_PID=$(pgrep -f "iproxy 8100 8100" || true)
+# 获取设备 UDID
+DEVICE_UDID=$(idevice_id -l | head -1)
+if [ -z "$DEVICE_UDID" ]; then
+    echo -e "  ${RED}❌ 未检测到 iOS 设备${NC}"
+    echo "  请确保设备已连接并信任此电脑"
+    exit 1
+fi
+echo "  检测到设备: $DEVICE_UDID"
+
+IPROXY_PID=$(pgrep -f "iproxy 8100 8100 -u $DEVICE_UDID" || true)
 if [ -z "$IPROXY_PID" ]; then
-    echo "  启动 iproxy 8100 8100..."
-    nohup iproxy 8100 8100 > /dev/null 2>&1 &
+    echo "  启动 iproxy 8100 8100 -u $DEVICE_UDID..."
+    nohup iproxy 8100 8100 -u $DEVICE_UDID > /dev/null 2>&1 &
     sleep 2
     echo -e "  ${GREEN}✅ iproxy 已启动${NC}"
 else

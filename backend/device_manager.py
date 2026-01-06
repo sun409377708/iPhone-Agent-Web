@@ -212,6 +212,18 @@ class DeviceManager:
                     self.release_port(device.local_port)
                     device.iproxy_pid = None
             
+            # 检查是否已有 iproxy 在 8100 端口运行（由 start-all.sh 启动）
+            try:
+                import requests
+                response = requests.get('http://localhost:8100/status', timeout=1)
+                if response.status_code == 200:
+                    # iproxy 已在运行，直接使用 8100 端口
+                    device.local_port = 8100
+                    print(f"✅ Using existing iproxy on port 8100 for device {device_id}")
+                    return True
+            except:
+                pass
+            
             # 分配新端口
             port = self.allocate_port()
             if not port:
