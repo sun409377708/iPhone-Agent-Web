@@ -1,10 +1,11 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
-import { fetchDevices, runTask, createLogStream, getScreenshot, getTestCases, initTestCases } from '@/api'
-import { Smartphone, RefreshCw, Play, Loader2, Monitor, TestTube, Plus } from 'lucide-vue-next'
+import { fetchDevices, runTask, createLogStream, getScreenshot, getTestCases, initTestCases, startWDA, stopWDA, getWDAStatus } from '@/api'
+import { Smartphone, RefreshCw, Play, Loader2, Monitor, TestTube, Plus, Power, PowerOff, Apple, Bot } from 'lucide-vue-next'
 
 const devices = ref([])
 const loading = ref(false)
+const selectedDevice = ref(null)
 const instruction = ref('')
 const logs = ref([])
 const isRunning = ref(false)
@@ -67,7 +68,37 @@ function setupLogStream() {
   )
 }
 
+async function handleWDAControl(device) {
+  if (!device || device.platform !== 'iOS') return
+  
+  try {
+    if (device.wda_status === 'running') {
+      await stopWDA(device.id)
+      alert('WDA 已停止')
+    } else {
+      await startWDA(device.id)
+      alert('WDA 正在启动，请稍候...')
+    }
+    // 刷新设备列表以更新状态
+    setTimeout(() => loadDevices(), 2000)
+  } catch (err) {
+    alert(`WDA 操作失败: ${err.message}`)
+  }
+}
+
+function selectDevice(device) {
+  selectedDevice.value = device
+  logs.value = []
+  screenshot.value = null
+  showScreenshot.value = false
+}
+
 async function handleRunTask() {
+  if (!selectedDevice.value) {
+    alert('请先选择一个设备')
+    return
+  }
+  
   if (!instruction.value.trim()) {
     alert('请输入任务指令')
     return
@@ -83,7 +114,7 @@ async function handleRunTask() {
   await new Promise(resolve => setTimeout(resolve, 500))
 
   try {
-    const result = await runTask(instruction.value)
+    const result = await runTask(instruction.value, selectedDevice.value.id)
     console.log('Task started:', result)
   } catch (error) {
     console.error('Failed to run task:', error)
@@ -118,9 +149,11 @@ function getLogColor(message) {
 }
 
 async function loadScreenshot() {
+  if (!selectedDevice.value) return
+  
   try {
     screenshotLoading.value = true
-    const data = await getScreenshot()
+    const data = await getScreenshot(selectedDevice.value.id)
     if (data.success) {
       screenshot.value = data.image
     }
@@ -234,16 +267,20 @@ onUnmounted(() => {
       <div
         v-for="device in devices"
         :key="device.id"
-        class="p-6 bg-white border border-gray-200 rounded-lg hover:shadow-lg transition-shadow"
+        @click="selectDevice(device)"
+        class="p-6 bg-white border-2 rounded-lg hover:shadow-lg transition-all cursor-pointer"
+        :class="selectedDevice?.id === device.id ? 'border-orange-500 bg-orange-50' : 'border-gray-200'"
       >
         <div class="flex items-start justify-between mb-4">
           <div class="flex items-center gap-3">
-            <div class="w-10 h-10 bg-primary/10 rounded-full flex items-center justify-center">
-              <Smartphone class="w-5 h-5 text-primary" />
+            <div class="w-10 h-10 rounded-full flex items-center justify-center"
+                 :class="device.platform === 'iOS' ? 'bg-gray-800' : 'bg-green-500'">
+              <Apple v-if="device.platform === 'iOS'" class="w-6 h-6 text-white" />
+              <Bot v-else class="w-6 h-6 text-white" />
             </div>
             <div>
               <h3 class="font-semibold">{{ device.name || '未命名设备' }}</h3>
-              <p class="text-sm text-muted-foreground">{{ device.platform || 'iOS' }}</p>
+              <p class="text-sm text-gray-500">{{ device.platform }} {{ device.version }}</p>
             </div>
           </div>
           <span class="px-2 py-1 text-xs font-medium bg-green-100 text-green-700 rounded-full">
@@ -251,10 +288,10 @@ onUnmounted(() => {
           </span>
         </div>
 
-        <div class="space-y-2 text-sm text-muted-foreground">
+        <div class="space-y-2 text-sm text-gray-600 mb-4">
           <div class="flex justify-between">
             <span>设备 ID:</span>
-            <span class="font-mono text-xs">{{ device.id || 'N/A' }}</span>
+            <span class="font-mono text-xs truncate ml-2">{{ device.id.substring(0, 20) }}...</span>
           </div>
           <div class="flex justify-between">
             <span>型号:</span>
@@ -264,6 +301,27 @@ onUnmounted(() => {
             <span>系统版本:</span>
             <span>{{ device.version || 'N/A' }}</span>
           </div>
+        </div>
+
+        <!-- iOS WDA 控制按钮 -->
+        <div v-if="device.platform === 'iOS'" class="mt-4 pt-4 border-t border-gray-200">
+          <button
+            @click.stop="handleWDAControl(device)"
+            class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg transition-colors text-sm font-medium"
+            :class="device.wda_status === 'running' 
+              ? 'bg-red-50 text-red-600 hover:bg-red-100' 
+              : 'bg-green-50 text-green-600 hover:bg-green-100'"
+          >
+            <Power v-if="device.wda_status !== 'running'" class="w-4 h-4" />
+            <PowerOff v-else class="w-4 h-4" />
+            <span v-if="device.wda_status === 'running'">停止 WDA</span>
+            <span v-else-if="device.wda_status === 'starting'">WDA 启动中...</span>
+            <span v-else>启动 WDA</span>
+          </button>
+          <p class="text-xs text-gray-500 text-center mt-2">
+            状态: {{ device.wda_status === 'running' ? '运行中' : device.wda_status === 'starting' ? '启动中' : '已停止' }}
+            <span v-if="device.local_port"> | 端口: {{ device.local_port }}</span>
+          </p>
         </div>
       </div>
     </div>

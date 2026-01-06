@@ -8,6 +8,7 @@ class TaskHistory(db.Model):
     
     id = db.Column(db.Integer, primary_key=True)
     task_description = db.Column(db.String(500), nullable=False)
+    device_id = db.Column(db.String(200), nullable=True)  # 设备 ID (UDID 或 Serial)
     status = db.Column(db.String(50), default='pending')  # pending, running, completed, failed
     result_message = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -17,6 +18,7 @@ class TaskHistory(db.Model):
         return {
             'id': self.id,
             'task_description': self.task_description,
+            'device_id': self.device_id,
             'status': self.status,
             'result_message': self.result_message,
             'created_at': self.created_at.isoformat() if self.created_at else None,

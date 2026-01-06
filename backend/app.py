@@ -8,11 +8,13 @@ from flask import Flask, render_template, request, jsonify, Response
 from flask_cors import CORS
 from .models import db, TaskHistory, TestCase
 from .config import Config
+from .device_manager import device_manager, DeviceInfo
 
 # Add Open-AutoGLM directory to path to import phone_agent
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'Open-AutoGLM')))
 
 from phone_agent.agent_ios import IOSAgentConfig, IOSPhoneAgent
+from phone_agent.agent_android import AndroidAgentConfig, AndroidPhoneAgent
 from phone_agent.model import ModelConfig
 
 # Configure template and static folders
@@ -71,58 +73,143 @@ def index():
 
 @app.route('/api/devices', methods=['GET'])
 def get_devices():
-    """Get connected devices"""
-    devices = []
+    """获取所有连接的设备（iOS + Android）"""
     try:
-        agent_instance = get_agent()
-        if agent_instance and hasattr(agent_instance, 'device_info'):
-            device_info = agent_instance.device_info()
-            devices.append({
-                'id': device_info.get('udid', 'unknown'),
-                'name': device_info.get('name', 'iOS Device'),
-                'platform': 'iOS',
-                'model': device_info.get('model', 'Unknown'),
-                'version': device_info.get('version', 'Unknown'),
+        all_devices = device_manager.detect_all_devices()
+        devices_list = []
+        
+        for device in all_devices:
+            device_dict = {
+                'id': device.device_id,
+                'name': device.name,
+                'platform': device.platform,
+                'model': device.model,
+                'version': device.os_version,
                 'status': 'online'
-            })
-        else:
-            devices.append({
-                'id': 'ios-device-1',
-                'name': 'iPhone',
-                'platform': 'iOS',
-                'model': 'iPhone',
-                'version': 'Unknown',
-                'status': 'online'
-            })
+            }
+            
+            # iOS 设备添加额外信息
+            if device.platform == 'iOS':
+                device_dict['wda_status'] = device.wda_status
+                device_dict['local_port'] = device.local_port
+                device_dict['has_iproxy'] = device.iproxy_pid is not None
+            
+            devices_list.append(device_dict)
+        
+        return jsonify({'devices': devices_list})
     except Exception as e:
-        print(f"Error getting device info: {e}")
-        devices.append({
-            'id': 'ios-device-1',
-            'name': 'iPhone',
-            'platform': 'iOS',
-            'model': 'iPhone',
-            'version': 'Unknown',
-            'status': 'online'
-        })
-    
-    return jsonify({'devices': devices})
+        print(f"Error detecting devices: {e}")
+        return jsonify({'devices': [], 'error': str(e)})
 
 @app.route('/api/history', methods=['GET'])
 def get_history():
     history = TaskHistory.query.order_by(TaskHistory.created_at.desc()).limit(20).all()
     return jsonify([task.to_dict() for task in history])
 
+@app.route('/api/devices/<device_id>/wda/start', methods=['POST'])
+def start_device_wda(device_id):
+    """启动 iOS 设备的 WebDriverAgent"""
+    try:
+        device = device_manager.get_device(device_id)
+        if not device:
+            return jsonify({'success': False, 'error': 'Device not found'}), 404
+        
+        if device.platform != 'iOS':
+            return jsonify({'success': False, 'error': 'WDA only supports iOS devices'}), 400
+        
+        # 获取 WDA 项目路径
+        wda_path = os.path.abspath(os.path.join(current_dir, '..', '..', 'WebDriverAgent'))
+        
+        success = device_manager.start_wda(device_id, wda_path)
+        if success:
+            return jsonify({'success': True, 'message': 'WDA is starting'})
+        else:
+            return jsonify({'success': False, 'error': 'Failed to start WDA'}), 500
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/devices/<device_id>/wda/stop', methods=['POST'])
+def stop_device_wda(device_id):
+    """停止 iOS 设备的 WebDriverAgent"""
+    try:
+        success = device_manager.stop_wda(device_id)
+        if success:
+            return jsonify({'success': True, 'message': 'WDA stopped'})
+        else:
+            return jsonify({'success': False, 'error': 'Failed to stop WDA'}), 500
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/devices/<device_id>/wda/status', methods=['GET'])
+def get_device_wda_status(device_id):
+    """获取 iOS 设备的 WDA 状态"""
+    try:
+        device = device_manager.get_device(device_id)
+        if not device:
+            return jsonify({'success': False, 'error': 'Device not found'}), 404
+        
+        return jsonify({
+            'success': True,
+            'status': device.wda_status,
+            'has_iproxy': device.iproxy_pid is not None,
+            'local_port': device.local_port
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/api/screenshot', methods=['GET'])
 def get_screenshot():
-    """获取设备截图"""
+    """获取设备截图（支持多设备）"""
+    device_id = request.args.get('device_id')
+    
     try:
         import requests
         import base64
         from io import BytesIO
         from PIL import Image
         
-        # 通过 WDA 获取截图 (WDA 返回的是 JSON 格式，包含 base64 编码的图片)
-        response = requests.get(f"{Config.WDA_URL}/screenshot", timeout=10)
+        # 获取设备信息
+        device = device_manager.get_device(device_id) if device_id else None
+        
+        if device and device.platform == 'iOS':
+            # iOS 设备通过 WDA 获取截图
+            wda_url = device_manager.get_wda_url(device_id)
+            if not wda_url:
+                return jsonify({'success': False, 'error': 'WDA not available'}), 500
+            
+            response = requests.get(f"{wda_url}/screenshot", timeout=10)
+        elif device and device.platform == 'Android':
+            # Android 设备通过 ADB 获取截图
+            import subprocess
+            result = subprocess.run(
+                ['adb', '-s', device_id, 'exec-out', 'screencap', '-p'],
+                capture_output=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                img_data = result.stdout
+                img = Image.open(BytesIO(img_data))
+                
+                # 调整大小
+                max_width = 400
+                if img.width > max_width:
+                    ratio = max_width / img.width
+                    new_height = int(img.height * ratio)
+                    img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
+                
+                buffer = BytesIO()
+                img.convert('RGB').save(buffer, format='JPEG', quality=85)
+                screenshot_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                
+                return jsonify({
+                    'success': True,
+                    'image': f'data:image/jpeg;base64,{screenshot_data}'
+                })
+            else:
+                return jsonify({'success': False, 'error': 'Failed to capture screenshot'}), 500
+        else:
+            # 兼容旧版本：使用默认 WDA URL
+            response = requests.get(f"{Config.WDA_URL}/screenshot", timeout=10)
         if response.status_code == 200:
             # WDA 返回的是 JSON: {"value": "base64_encoded_png", "sessionId": "..."}
             data = response.json()
@@ -167,19 +254,77 @@ def get_screenshot():
             'error': str(e)
         }), 500
 
+def create_agent_for_device(device_id: str):
+    """为指定设备创建 Agent 实例"""
+    device = device_manager.get_device(device_id)
+    if not device:
+        raise ValueError(f"Device {device_id} not found")
+    
+    # 加载配置
+    config_file = os.path.join(os.path.dirname(__file__), '..', 'config.json')
+    if os.path.exists(config_file):
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config_data = json.load(f)
+    else:
+        config_data = {
+            'apiKey': Config.MODEL_API_KEY,
+            'modelType': 'glm-4',
+            'baseUrl': Config.MODEL_BASE_URL
+        }
+    
+    model_config = ModelConfig(
+        base_url=config_data.get('baseUrl', Config.MODEL_BASE_URL),
+        api_key=config_data.get('apiKey', Config.MODEL_API_KEY),
+        model_name=config_data.get('modelType', 'autoglm-phone')
+    )
+    
+    if device.platform == 'iOS':
+        # 确保 iproxy 已启动
+        if not device.local_port:
+            device_manager.start_iproxy(device_id)
+        
+        wda_url = device_manager.get_wda_url(device_id)
+        if not wda_url:
+            raise ValueError(f"WDA not available for device {device_id}")
+        
+        agent_config = IOSAgentConfig(
+            wda_url=wda_url,
+            lang=Config.DEFAULT_LANG
+        )
+        return IOSPhoneAgent(model_config=model_config, agent_config=agent_config)
+    
+    elif device.platform == 'Android':
+        agent_config = AndroidAgentConfig(
+            serial_number=device_id,
+            lang=Config.DEFAULT_LANG
+        )
+        return AndroidPhoneAgent(model_config=model_config, agent_config=agent_config)
+    
+    else:
+        raise ValueError(f"Unsupported platform: {device.platform}")
+
 @app.route('/run', methods=['POST'])
 def run_task():
     task_desc = request.json.get('task')
+    device_id = request.json.get('device_id')
+    
     if not task_desc:
         return jsonify({"error": "No task provided"}), 400
     
+    if not device_id:
+        return jsonify({"error": "No device_id provided"}), 400
+    
     # Save to database
-    new_task = TaskHistory(task_description=task_desc, status='running')
+    new_task = TaskHistory(
+        task_description=task_desc, 
+        status='running',
+        device_id=device_id
+    )
     db.session.add(new_task)
     db.session.commit()
     task_id = new_task.id
     
-    def target(tid, t_desc):
+    def target(tid, t_desc, dev_id):
         with app.app_context():
             import io
             import sys
@@ -194,11 +339,13 @@ def run_task():
             original_stdout = sys.stdout
             
             try:
-                print(f"[Task {tid}] Starting task: {t_desc}")
+                print(f"[Task {tid}] Starting task on device {dev_id}: {t_desc}")
                 log_queue.put(f"📝 开始执行任务: {t_desc}")
+                log_queue.put(f"📱 目标设备: {dev_id}")
                 
-                agent = get_agent()
-                print(f"[Task {tid}] Agent initialized")
+                # 为设备创建专属 Agent
+                agent = create_agent_for_device(dev_id)
+                print(f"[Task {tid}] Agent initialized for {dev_id}")
                 log_queue.put("🤖 AI 正在分析任务并执行中，请稍候...")
                 
                 # 完全屏蔽 Agent 的输出，避免逐字显示
@@ -233,7 +380,7 @@ def run_task():
                 db.session.commit()
                 log_queue.put("__END__")
 
-    threading.Thread(target=target, args=(task_id, task_desc)).start()
+    threading.Thread(target=target, args=(task_id, task_desc, device_id)).start()
     return jsonify({"status": "started", "task_id": task_id})
 
 @app.route('/logs')

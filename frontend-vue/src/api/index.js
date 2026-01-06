@@ -19,13 +19,13 @@ export async function fetchDevices() {
   return response.json()
 }
 
-export async function runTask(instruction) {
+export async function runTask(instruction, deviceId) {
   const response = await fetch(`${API_BASE_URL}/run`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ task: instruction }),
+    body: JSON.stringify({ task: instruction, device_id: deviceId }),
   })
   if (!response.ok) {
     throw new Error('Failed to run task')
@@ -63,8 +63,11 @@ export function createLogStream(onMessage, onError) {
   return eventSource
 }
 
-export async function getScreenshot() {
-  const response = await fetch(`${API_BASE_URL}/api/screenshot`)
+export async function getScreenshot(deviceId) {
+  const url = deviceId 
+    ? `${API_BASE_URL}/api/screenshot?device_id=${deviceId}`
+    : `${API_BASE_URL}/api/screenshot`
+  const response = await fetch(url)
   if (!response.ok) {
     throw new Error('Failed to get screenshot')
   }
@@ -128,6 +131,36 @@ export async function initTestCases() {
   })
   if (!response.ok) {
     throw new Error('Failed to initialize test cases')
+  }
+  return response.json()
+}
+
+// ==================== WDA 控制 ====================
+
+export async function startWDA(deviceId) {
+  const response = await fetch(`${API_BASE_URL}/api/devices/${deviceId}/wda/start`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    throw new Error('Failed to start WDA')
+  }
+  return response.json()
+}
+
+export async function stopWDA(deviceId) {
+  const response = await fetch(`${API_BASE_URL}/api/devices/${deviceId}/wda/stop`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    throw new Error('Failed to stop WDA')
+  }
+  return response.json()
+}
+
+export async function getWDAStatus(deviceId) {
+  const response = await fetch(`${API_BASE_URL}/api/devices/${deviceId}/wda/status`)
+  if (!response.ok) {
+    throw new Error('Failed to get WDA status')
   }
   return response.json()
 }
