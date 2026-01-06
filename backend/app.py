@@ -14,8 +14,15 @@ from .device_manager import device_manager, DeviceInfo
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'Open-AutoGLM')))
 
 from phone_agent.agent_ios import IOSAgentConfig, IOSPhoneAgent
-from phone_agent.agent_android import AndroidAgentConfig, AndroidPhoneAgent
 from phone_agent.model import ModelConfig
+
+# Android Agent 暂未实现，使用条件导入
+try:
+    from phone_agent.agent_android import AndroidAgentConfig, AndroidPhoneAgent
+    ANDROID_SUPPORT = True
+except ImportError:
+    ANDROID_SUPPORT = False
+    print("⚠️  Android Agent not available. Only iOS devices are supported.")
 
 # Configure template and static folders
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -309,6 +316,9 @@ def create_agent_for_device(device_id: str):
         return IOSPhoneAgent(model_config=model_config, agent_config=agent_config)
     
     elif device.platform == 'Android':
+        if not ANDROID_SUPPORT:
+            raise ValueError("Android Agent is not available. Please implement phone_agent.agent_android module.")
+        
         agent_config = AndroidAgentConfig(
             serial_number=device_id,
             lang=Config.DEFAULT_LANG
