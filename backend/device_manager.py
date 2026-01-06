@@ -2,6 +2,7 @@ import os
 import subprocess
 import threading
 import time
+import shutil
 from typing import Dict, Optional, List
 from dataclasses import dataclass
 
@@ -104,9 +105,14 @@ class DeviceManager:
     def detect_android_devices(self) -> List[DeviceInfo]:
         """检测 Android 设备"""
         devices = []
+        
+        # 检查 adb 命令是否存在
+        if not shutil.which('adb'):
+            return devices  # 静默返回空列表，不打印错误
+        
         try:
             # 使用 adb devices 获取所有连接的 Android 设备
-            result = subprocess.run(['adb', 'devices'], 
+            result = subprocess.run(['adb', 'devices', '-l'], 
                                   capture_output=True, 
                                   text=True, 
                                   timeout=5)
@@ -187,6 +193,7 @@ class DeviceManager:
     
     def start_iproxy(self, device_id: str) -> bool:
         """为 iOS 设备启动 iproxy 端口转发"""
+        # 先获取设备信息和分配端口（需要锁）
         with self.lock:
             if device_id not in self.devices:
                 return False
@@ -210,31 +217,29 @@ class DeviceManager:
             if not port:
                 print(f"No available port for device {device_id}")
                 return False
+        
+        # 在锁外启动进程，避免阻塞
+        try:
+            # 启动 iproxy
+            process = subprocess.Popen(
+                ['iproxy', str(port), '8100', '-u', device_id],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
             
-            try:
-                # 启动 iproxy
-                process = subprocess.Popen(
-                    ['iproxy', str(port), '8100', '-u', device_id],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
+            # 保存进程信息
+            with self.lock:
+                device.local_port = port
+                device.iproxy_pid = process.pid
+            
+            print(f"✅ Started iproxy for {device_id} on port {port}, PID: {process.pid}")
+            return True
                 
-                # 等待一下确保启动成功
-                time.sleep(1)
-                
-                if process.poll() is None:  # 进程还在运行
-                    device.local_port = port
-                    device.iproxy_pid = process.pid
-                    print(f"Started iproxy for {device_id} on port {port}, PID: {process.pid}")
-                    return True
-                else:
-                    self.release_port(port)
-                    return False
-                    
-            except Exception as e:
-                print(f"Error starting iproxy: {e}")
+        except Exception as e:
+            print(f"❌ Error starting iproxy: {e}")
+            with self.lock:
                 self.release_port(port)
-                return False
+            return False
     
     def stop_iproxy(self, device_id: str) -> bool:
         """停止 iOS 设备的 iproxy"""
@@ -261,6 +266,7 @@ class DeviceManager:
     
     def start_wda(self, device_id: str, wda_project_path: str) -> bool:
         """启动 iOS 设备的 WebDriverAgent"""
+        # 先检查设备和路径（需要锁）
         with self.lock:
             if device_id not in self.devices:
                 print(f"❌ Device {device_id} not found in device list")
@@ -281,14 +287,18 @@ class DeviceManager:
                 print(f"❌ WebDriverAgent.xcodeproj not found at: {xcodeproj_path}")
                 return False
             
-            # 确保 iproxy 已启动
-            if not device.local_port:
-                print(f"🔧 Starting iproxy for device {device_id}...")
-                if not self.start_iproxy(device_id):
-                    print(f"❌ Failed to start iproxy for device {device_id}")
-                    return False
-                print(f"✅ iproxy started on port {device.local_port}")
-            
+            needs_iproxy = not device.local_port
+        
+        # 在锁外启动 iproxy，避免死锁
+        if needs_iproxy:
+            print(f"🔧 Starting iproxy for device {device_id}...")
+            if not self.start_iproxy(device_id):
+                print(f"❌ Failed to start iproxy for device {device_id}")
+                return False
+            print(f"✅ iproxy started")
+        
+        # 设置 WDA 状态
+        with self.lock:
             device.wda_status = 'starting'
             print(f"🚀 Starting WDA for device {device_id}...")
         
