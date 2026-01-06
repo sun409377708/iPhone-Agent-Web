@@ -303,7 +303,7 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- iOS WDA 控制按钮 -->
+        <!-- iOS WDA 连接控制 -->
         <div v-if="device.platform === 'iOS'" class="mt-4 pt-4 border-t border-gray-200">
           <button
             @click.stop="handleWDAControl(device)"
@@ -314,13 +314,16 @@ onUnmounted(() => {
           >
             <Power v-if="device.wda_status !== 'running'" class="w-4 h-4" />
             <PowerOff v-else class="w-4 h-4" />
-            <span v-if="device.wda_status === 'running'">停止 WDA</span>
-            <span v-else-if="device.wda_status === 'starting'">WDA 启动中...</span>
-            <span v-else>启动 WDA</span>
+            <span v-if="device.wda_status === 'running'">断开连接</span>
+            <span v-else-if="device.wda_status === 'starting'">连接中...</span>
+            <span v-else>连接设备</span>
           </button>
           <p class="text-xs text-gray-500 text-center mt-2">
-            状态: {{ device.wda_status === 'running' ? '运行中' : device.wda_status === 'starting' ? '启动中' : '已停止' }}
+            {{ device.wda_status === 'running' ? '✅ 已连接' : device.wda_status === 'starting' ? '⏳ 连接中' : '⚪ 未连接' }}
             <span v-if="device.local_port"> | 端口: {{ device.local_port }}</span>
+          </p>
+          <p class="text-xs text-gray-400 text-center mt-1">
+            {{ device.wda_status === 'running' ? '' : '提示: 请先在 Xcode 中启动 WDA' }}
           </p>
         </div>
       </div>

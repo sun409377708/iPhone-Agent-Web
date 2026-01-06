@@ -1,0 +1,7 @@
+{
+  "apiKey": "78fd6426a1124a0d989292c028230351.0rpceEypavcHTFWQ",
+  "modelType": "glm-4",
+  "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+  "temperature": 0.7,
+  "maxTokens": 2000
+}
