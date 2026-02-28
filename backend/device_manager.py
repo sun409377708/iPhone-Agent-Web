@@ -16,6 +16,8 @@ class DeviceInfo:
     os_version: str
     local_port: Optional[int] = None
     iproxy_pid: Optional[int] = None
+    local_mjpeg_port: Optional[int] = None
+    iproxy_mjpeg_pid: Optional[int] = None
     wda_pid: Optional[int] = None
     wda_status: str = 'stopped'  # 'stopped', 'starting', 'running', 'error'
     agent_instance: Optional[object] = None
@@ -25,24 +27,41 @@ class DeviceManager:
     
     def __init__(self):
         self.devices: Dict[str, DeviceInfo] = {}
-        self.port_pool = list(range(8100, 8200))  # 可用端口池
-        self.used_ports = set()
+        self.wda_port_pool = list(range(8100, 8200))  # WDA HTTP 端口池
+        self.mjpeg_port_pool = list(range(9100, 9200))  # MJPEG 端口池
+        self.used_wda_ports = set()
+        self.used_mjpeg_ports = set()
         self.lock = threading.Lock()
-        
-    def allocate_port(self) -> Optional[int]:
-        """分配一个可用端口"""
+
+    def allocate_wda_port(self) -> Optional[int]:
+        """分配一个可用 WDA 端口"""
         with self.lock:
-            for port in self.port_pool:
-                if port not in self.used_ports:
-                    self.used_ports.add(port)
+            for port in self.wda_port_pool:
+                if port not in self.used_wda_ports:
+                    self.used_wda_ports.add(port)
                     return port
         return None
-    
-    def release_port(self, port: int):
-        """释放端口"""
+
+    def release_wda_port(self, port: int):
+        """释放 WDA 端口"""
         with self.lock:
-            if port in self.used_ports:
-                self.used_ports.remove(port)
+            if port in self.used_wda_ports:
+                self.used_wda_ports.remove(port)
+
+    def allocate_mjpeg_port(self) -> Optional[int]:
+        """分配一个可用 MJPEG 端口"""
+        with self.lock:
+            for port in self.mjpeg_port_pool:
+                if port not in self.used_mjpeg_ports:
+                    self.used_mjpeg_ports.add(port)
+                    return port
+        return None
+
+    def release_mjpeg_port(self, port: int):
+        """释放 MJPEG 端口"""
+        with self.lock:
+            if port in self.used_mjpeg_ports:
+                self.used_mjpeg_ports.remove(port)
     
     def detect_ios_devices(self) -> List[DeviceInfo]:
         """检测 iOS 设备"""
@@ -183,6 +202,8 @@ class DeviceManager:
                     existing = self.devices[device.device_id]
                     device.local_port = existing.local_port
                     device.iproxy_pid = existing.iproxy_pid
+                    device.local_mjpeg_port = existing.local_mjpeg_port
+                    device.iproxy_mjpeg_pid = existing.iproxy_mjpeg_pid
                     device.wda_pid = existing.wda_pid
                     device.wda_status = existing.wda_status
                     device.agent_instance = existing.agent_instance
@@ -209,7 +230,7 @@ class DeviceManager:
                     return True  # 进程还在运行
                 except OSError:
                     # 进程已死，释放端口
-                    self.release_port(device.local_port)
+                    self.release_wda_port(device.local_port)
                     device.iproxy_pid = None
             
             # 检查是否已有 iproxy 在 8100 端口运行（由 start-all.sh 启动）
@@ -225,7 +246,7 @@ class DeviceManager:
                 pass
             
             # 分配新端口
-            port = self.allocate_port()
+            port = self.allocate_wda_port()
             if not port:
                 print(f"No available port for device {device_id}")
                 return False
@@ -250,7 +271,60 @@ class DeviceManager:
         except Exception as e:
             print(f"❌ Error starting iproxy: {e}")
             with self.lock:
-                self.release_port(port)
+                self.release_wda_port(port)
+            return False
+
+    def start_mjpeg_iproxy(self, device_id: str) -> bool:
+        """为 iOS 设备启动 MJPEG 端口转发（9100）"""
+        with self.lock:
+            if device_id not in self.devices:
+                return False
+
+            device = self.devices[device_id]
+            if device.platform != 'iOS':
+                return False
+
+            if device.local_mjpeg_port and device.iproxy_mjpeg_pid:
+                try:
+                    os.kill(device.iproxy_mjpeg_pid, 0)
+                    return True
+                except OSError:
+                    self.release_mjpeg_port(device.local_mjpeg_port)
+                    device.iproxy_mjpeg_pid = None
+
+            # 单设备场景：复用 start-all.sh 预先拉起的 9100 映射
+            try:
+                import socket
+                sock = socket.create_connection(('127.0.0.1', 9100), timeout=1)
+                sock.close()
+                device.local_mjpeg_port = 9100
+                print(f"✅ Using existing MJPEG iproxy on port 9100 for device {device_id}")
+                return True
+            except Exception:
+                pass
+
+            port = self.allocate_mjpeg_port()
+            if not port:
+                print(f"No available MJPEG port for device {device_id}")
+                return False
+
+        try:
+            process = subprocess.Popen(
+                ['iproxy', str(port), '9100', '-u', device_id],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+
+            with self.lock:
+                device.local_mjpeg_port = port
+                device.iproxy_mjpeg_pid = process.pid
+
+            print(f"✅ Started MJPEG iproxy for {device_id} on port {port}, PID: {process.pid}")
+            return True
+        except Exception as e:
+            print(f"❌ Error starting MJPEG iproxy: {e}")
+            with self.lock:
+                self.release_mjpeg_port(port)
             return False
     
     def stop_iproxy(self, device_id: str) -> bool:
@@ -271,9 +345,21 @@ class DeviceManager:
                 device.iproxy_pid = None
             
             if device.local_port:
-                self.release_port(device.local_port)
+                self.release_wda_port(device.local_port)
                 device.local_port = None
-            
+
+            if device.iproxy_mjpeg_pid:
+                try:
+                    os.kill(device.iproxy_mjpeg_pid, 9)
+                    print(f"Stopped MJPEG iproxy PID: {device.iproxy_mjpeg_pid}")
+                except OSError:
+                    pass
+                device.iproxy_mjpeg_pid = None
+
+            if device.local_mjpeg_port:
+                self.release_mjpeg_port(device.local_mjpeg_port)
+                device.local_mjpeg_port = None
+
             return True
     
     def start_wda(self, device_id: str, wda_project_path: str) -> bool:
@@ -308,6 +394,9 @@ class DeviceManager:
                 print(f"❌ Failed to start iproxy for device {device_id}")
                 return False
             print(f"✅ iproxy started")
+
+        # MJPEG 转发非强依赖，按需尝试
+        self.start_mjpeg_iproxy(device_id)
         
         # 检测 WDA 是否已在设备上运行
         print(f"🔍 Checking if WDA is already running on device...")
@@ -374,6 +463,15 @@ class DeviceManager:
         if device and device.platform == 'iOS' and device.local_port:
             return f"http://localhost:{device.local_port}"
         return None
+
+    def get_mjpeg_url(self, device_id: str) -> Optional[str]:
+        """获取设备的 MJPEG URL"""
+        device = self.get_device(device_id)
+        if not device or device.platform != 'iOS':
+            return None
+        if not device.local_mjpeg_port and not self.start_mjpeg_iproxy(device_id):
+            return None
+        return f"http://localhost:{device.local_mjpeg_port}"
     
     def cleanup(self):
         """清理所有资源"""

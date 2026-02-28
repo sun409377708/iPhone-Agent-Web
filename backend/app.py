@@ -4,7 +4,7 @@ import json
 import threading
 import queue
 from datetime import datetime
-from flask import Flask, render_template, request, jsonify, Response
+from flask import Flask, render_template, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 from .models import db, TaskHistory, TestCase
 from .config import Config
@@ -84,7 +84,7 @@ def get_devices():
     try:
         all_devices = device_manager.detect_all_devices()
         devices_list = []
-        
+
         for device in all_devices:
             device_dict = {
                 'id': device.device_id,
@@ -94,15 +94,15 @@ def get_devices():
                 'version': device.os_version,
                 'status': 'online'
             }
-            
-            # iOS 设备添加额外信息
+
             if device.platform == 'iOS':
                 device_dict['wda_status'] = device.wda_status
                 device_dict['local_port'] = device.local_port
+                device_dict['local_mjpeg_port'] = device.local_mjpeg_port
                 device_dict['has_iproxy'] = device.iproxy_pid is not None
-            
+
             devices_list.append(device_dict)
-        
+
         return jsonify({'devices': devices_list})
     except Exception as e:
         print(f"Error detecting devices: {e}")
@@ -113,42 +113,25 @@ def get_history():
     history = TaskHistory.query.order_by(TaskHistory.created_at.desc()).limit(20).all()
     return jsonify([task.to_dict() for task in history])
 
+
 @app.route('/api/devices/<device_id>/wda/start', methods=['POST'])
 def start_device_wda(device_id):
     """启动 iOS 设备的 WebDriverAgent"""
     try:
         device = device_manager.get_device(device_id)
         if not device:
-            print(f"❌ Device {device_id} not found")
             return jsonify({'success': False, 'error': 'Device not found'}), 404
-        
         if device.platform != 'iOS':
-            print(f"❌ Device {device_id} is not iOS")
             return jsonify({'success': False, 'error': 'WDA only supports iOS devices'}), 400
-        
-        # 获取 WDA 项目路径
+
         wda_path = os.path.abspath(os.path.join(current_dir, '..', '..', 'WebDriverAgent'))
-        print(f"🔍 WDA project path: {wda_path}")
-        
-        # 检查路径是否存在
-        if not os.path.exists(wda_path):
-            error_msg = f'WebDriverAgent not found at {wda_path}. Please clone it first.'
-            print(f"❌ {error_msg}")
-            return jsonify({'success': False, 'error': error_msg}), 500
-        
         success = device_manager.start_wda(device_id, wda_path)
         if success:
-            print(f"✅ WDA starting for device {device_id}")
             return jsonify({'success': True, 'message': 'WDA is starting, please wait...'})
-        else:
-            error_msg = 'Failed to start WDA. Check backend logs for details.'
-            print(f"❌ {error_msg}")
-            return jsonify({'success': False, 'error': error_msg}), 500
+        return jsonify({'success': False, 'error': 'Failed to start WDA. Check backend logs for details.'}), 500
     except Exception as e:
-        import traceback
-        error_detail = traceback.format_exc()
-        print(f"❌ Exception in start_device_wda: {error_detail}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/api/devices/<device_id>/wda/stop', methods=['POST'])
 def stop_device_wda(device_id):
@@ -157,10 +140,10 @@ def stop_device_wda(device_id):
         success = device_manager.stop_wda(device_id)
         if success:
             return jsonify({'success': True, 'message': 'WDA stopped'})
-        else:
-            return jsonify({'success': False, 'error': 'Failed to stop WDA'}), 500
+        return jsonify({'success': False, 'error': 'Failed to stop WDA'}), 500
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/api/devices/<device_id>/wda/status', methods=['GET'])
 def get_device_wda_status(device_id):
@@ -169,7 +152,7 @@ def get_device_wda_status(device_id):
         device = device_manager.get_device(device_id)
         if not device:
             return jsonify({'success': False, 'error': 'Device not found'}), 404
-        
+
         return jsonify({
             'success': True,
             'status': device.wda_status,
@@ -183,57 +166,43 @@ def get_device_wda_status(device_id):
 def get_screenshot():
     """获取设备截图（支持多设备）"""
     device_id = request.args.get('device_id')
-    
     try:
         import requests
         import base64
         from io import BytesIO
         from PIL import Image
-        
-        # 获取设备信息
+
         device = device_manager.get_device(device_id) if device_id else None
-        
+
         if device and device.platform == 'iOS':
-            # iOS 设备通过 WDA 获取截图
             wda_url = device_manager.get_wda_url(device_id)
             if not wda_url:
                 return jsonify({'success': False, 'error': 'WDA not available'}), 500
-            
             response = requests.get(f"{wda_url}/screenshot", timeout=10)
         elif device and device.platform == 'Android':
-            # Android 设备通过 ADB 获取截图
             import subprocess
             result = subprocess.run(
                 ['adb', '-s', device_id, 'exec-out', 'screencap', '-p'],
                 capture_output=True,
                 timeout=10
             )
-            if result.returncode == 0:
-                img_data = result.stdout
-                img = Image.open(BytesIO(img_data))
-                
-                # 调整大小
-                max_width = 400
-                if img.width > max_width:
-                    ratio = max_width / img.width
-                    new_height = int(img.height * ratio)
-                    img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
-                
-                buffer = BytesIO()
-                img.convert('RGB').save(buffer, format='JPEG', quality=85)
-                screenshot_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
-                
-                return jsonify({
-                    'success': True,
-                    'image': f'data:image/jpeg;base64,{screenshot_data}'
-                })
-            else:
+            if result.returncode != 0:
                 return jsonify({'success': False, 'error': 'Failed to capture screenshot'}), 500
+            img_data = result.stdout
+            img = Image.open(BytesIO(img_data))
+            max_width = 400
+            if img.width > max_width:
+                ratio = max_width / img.width
+                new_height = int(img.height * ratio)
+                img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
+            buffer = BytesIO()
+            img.convert('RGB').save(buffer, format='JPEG', quality=85)
+            screenshot_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
+            return jsonify({'success': True, 'image': f'data:image/jpeg;base64,{screenshot_data}'})
         else:
-            # 兼容旧版本：使用默认 WDA URL
             response = requests.get(f"{Config.WDA_URL}/screenshot", timeout=10)
+
         if response.status_code == 200:
-            # WDA 返回的是 JSON: {"value": "base64_encoded_png", "sessionId": "..."}
             data = response.json()
             screenshot_base64 = data.get('value', '')
             
@@ -276,55 +245,187 @@ def get_screenshot():
             'error': str(e)
         }), 500
 
+
+@app.route('/api/devices/<device_id>/mjpeg', methods=['GET'])
+def get_mjpeg_stream(device_id):
+    """获取 iOS 设备 MJPEG 实时流（代理 WDA 9100 端口）"""
+    device = device_manager.get_device(device_id)
+    if not device:
+        return jsonify({'success': False, 'error': 'Device not found'}), 404
+    if device.platform != 'iOS':
+        return jsonify({'success': False, 'error': 'MJPEG stream only supports iOS devices'}), 400
+
+    mjpeg_url = device_manager.get_mjpeg_url(device_id)
+    if not mjpeg_url:
+        return jsonify({'success': False, 'error': 'MJPEG iproxy not available'}), 500
+
+    import requests
+    try:
+        upstream = requests.get(mjpeg_url, stream=True, timeout=(3, 60))
+    except requests.RequestException as e:
+        return jsonify({'success': False, 'error': f'Failed to connect MJPEG stream: {e}'}), 502
+
+    if upstream.status_code != 200:
+        upstream.close()
+        return jsonify({'success': False, 'error': f'WDA MJPEG returned {upstream.status_code}'}), 502
+
+    content_type = upstream.headers.get('Content-Type', 'multipart/x-mixed-replace; boundary=--BoundaryString')
+
+    @stream_with_context
+    def generate():
+        try:
+            for chunk in upstream.iter_content(chunk_size=8192):
+                if chunk:
+                    yield chunk
+        finally:
+            upstream.close()
+
+    response = Response(generate(), mimetype=content_type)
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    response.headers['Connection'] = 'close'
+    return response
+
+
+def _clamp_ratio(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _ratio_to_point(ratio_x: float, ratio_y: float, width: float, height: float):
+    x = int(round(_clamp_ratio(ratio_x) * width))
+    y = int(round(_clamp_ratio(ratio_y) * height))
+    return x, y
+
+
+@app.route('/api/devices/<device_id>/control/tap', methods=['POST'])
+def control_tap(device_id):
+    device = device_manager.get_device(device_id)
+    if not device or device.platform != 'iOS':
+        return jsonify({'success': False, 'error': 'Tap control only supports iOS devices'}), 400
+    data = request.get_json(silent=True) or {}
+    if 'x_ratio' not in data or 'y_ratio' not in data:
+        return jsonify({'success': False, 'error': 'x_ratio and y_ratio are required'}), 400
+    wda_url = device_manager.get_wda_url(device_id)
+    if not wda_url:
+        return jsonify({'success': False, 'error': 'WDA not available'}), 500
+    import requests
+    session_resp = requests.post(f"{wda_url}/session", json={"capabilities": {}}, timeout=15)
+    session_data = session_resp.json() if session_resp.status_code in (200, 201) else {}
+    session_id = session_data.get("sessionId") or session_data.get("value", {}).get("sessionId")
+    if not session_id:
+        return jsonify({'success': False, 'error': 'Failed to create WDA session'}), 500
+    size_resp = requests.get(f"{wda_url}/session/{session_id}/window/size", timeout=15)
+    size = size_resp.json().get("value", {}) if size_resp.status_code == 200 else {}
+    width = float(size.get("width", 0))
+    height = float(size.get("height", 0))
+    if width <= 0 or height <= 0:
+        return jsonify({'success': False, 'error': 'Failed to get screen size'}), 500
+    x, y = _ratio_to_point(data['x_ratio'], data['y_ratio'], width, height)
+    payload = {"actions": [{"type": "pointer", "id": "finger1", "parameters": {"pointerType": "touch"}, "actions": [{"type": "pointerMove", "duration": 0, "x": x, "y": y}, {"type": "pointerDown", "button": 0}, {"type": "pause", "duration": 0}, {"type": "pointerUp", "button": 0}]}]}
+    action_resp = requests.post(f"{wda_url}/session/{session_id}/actions", json=payload, timeout=20)
+    if action_resp.status_code not in (200, 201):
+        return jsonify({'success': False, 'error': f'WDA tap failed: {action_resp.text[:200]}'}), 502
+    return jsonify({'success': True, 'x': x, 'y': y})
+
+
+@app.route('/api/devices/<device_id>/control/swipe', methods=['POST'])
+def control_swipe(device_id):
+    device = device_manager.get_device(device_id)
+    if not device or device.platform != 'iOS':
+        return jsonify({'success': False, 'error': 'Swipe control only supports iOS devices'}), 400
+    data = request.get_json(silent=True) or {}
+    required = ('start_x_ratio', 'start_y_ratio', 'end_x_ratio', 'end_y_ratio')
+    if any(field not in data for field in required):
+        return jsonify({'success': False, 'error': 'start/end ratio fields are required'}), 400
+    duration_ms = int(data.get('duration_ms', 350))
+    duration_sec = max(0.1, min(duration_ms / 1000.0, 3.0))
+    wda_url = device_manager.get_wda_url(device_id)
+    if not wda_url:
+        return jsonify({'success': False, 'error': 'WDA not available'}), 500
+    import requests
+    session_resp = requests.post(f"{wda_url}/session", json={"capabilities": {}}, timeout=15)
+    session_data = session_resp.json() if session_resp.status_code in (200, 201) else {}
+    session_id = session_data.get("sessionId") or session_data.get("value", {}).get("sessionId")
+    if not session_id:
+        return jsonify({'success': False, 'error': 'Failed to create WDA session'}), 500
+    size_resp = requests.get(f"{wda_url}/session/{session_id}/window/size", timeout=15)
+    size = size_resp.json().get("value", {}) if size_resp.status_code == 200 else {}
+    width = float(size.get("width", 0))
+    height = float(size.get("height", 0))
+    if width <= 0 or height <= 0:
+        return jsonify({'success': False, 'error': 'Failed to get screen size'}), 500
+    from_x, from_y = _ratio_to_point(data['start_x_ratio'], data['start_y_ratio'], width, height)
+    to_x, to_y = _ratio_to_point(data['end_x_ratio'], data['end_y_ratio'], width, height)
+    payload = {"fromX": from_x, "fromY": from_y, "toX": to_x, "toY": to_y, "duration": duration_sec}
+    swipe_resp = requests.post(f"{wda_url}/session/{session_id}/wda/dragfromtoforduration", json=payload, timeout=20)
+    if swipe_resp.status_code not in (200, 201):
+        return jsonify({'success': False, 'error': f'WDA swipe failed: {swipe_resp.text[:200]}'}), 502
+    return jsonify({'success': True, 'from': {'x': from_x, 'y': from_y}, 'to': {'x': to_x, 'y': to_y}})
+
+
+@app.route('/api/devices/<device_id>/control/wake', methods=['POST'])
+def control_wake(device_id):
+    device = device_manager.get_device(device_id)
+    if not device or device.platform != 'iOS':
+        return jsonify({'success': False, 'error': 'Wake control only supports iOS devices'}), 400
+    wda_url = device_manager.get_wda_url(device_id)
+    if not wda_url:
+        return jsonify({'success': False, 'error': 'WDA not available'}), 500
+    import requests
+    try:
+        requests.post(f"{wda_url}/wda/pressButton", json={"name": "home"}, timeout=5)
+    except Exception:
+        pass
+    return jsonify({'success': True})
+
+
+@app.route('/api/devices/<device_id>/control/home', methods=['POST'])
+def control_home(device_id):
+    device = device_manager.get_device(device_id)
+    if not device or device.platform != 'iOS':
+        return jsonify({'success': False, 'error': 'Home control only supports iOS devices'}), 400
+    wda_url = device_manager.get_wda_url(device_id)
+    if not wda_url:
+        return jsonify({'success': False, 'error': 'WDA not available'}), 500
+    import requests
+    resp = requests.post(f"{wda_url}/wda/homescreen", timeout=5)
+    if resp.status_code not in (200, 201):
+        return jsonify({'success': False, 'error': f'WDA home failed: {resp.text[:200]}'}), 502
+    return jsonify({'success': True})
+
+
 def create_agent_for_device(device_id: str):
-    """为指定设备创建 Agent 实例"""
     device = device_manager.get_device(device_id)
     if not device:
         raise ValueError(f"Device {device_id} not found")
-    
-    # 加载配置
+
     config_file = os.path.join(os.path.dirname(__file__), '..', 'config.json')
     if os.path.exists(config_file):
         with open(config_file, 'r', encoding='utf-8') as f:
             config_data = json.load(f)
     else:
-        config_data = {
-            'apiKey': Config.MODEL_API_KEY,
-            'modelType': 'glm-4',
-            'baseUrl': Config.MODEL_BASE_URL
-        }
-    
+        config_data = {'apiKey': Config.MODEL_API_KEY, 'modelType': 'glm-4', 'baseUrl': Config.MODEL_BASE_URL}
+
     model_config = ModelConfig(
         base_url=config_data.get('baseUrl', Config.MODEL_BASE_URL),
         api_key=config_data.get('apiKey', Config.MODEL_API_KEY),
         model_name=config_data.get('modelType', 'autoglm-phone')
     )
-    
+
     if device.platform == 'iOS':
-        # 确保 iproxy 已启动
         if not device.local_port:
             device_manager.start_iproxy(device_id)
-        
         wda_url = device_manager.get_wda_url(device_id)
         if not wda_url:
             raise ValueError(f"WDA not available for device {device_id}")
-        
-        agent_config = IOSAgentConfig(
-            wda_url=wda_url,
-            lang=Config.DEFAULT_LANG
-        )
+        agent_config = IOSAgentConfig(wda_url=wda_url, lang=Config.DEFAULT_LANG)
         return IOSPhoneAgent(model_config=model_config, agent_config=agent_config)
-    
     elif device.platform == 'Android':
         if not ANDROID_SUPPORT:
-            raise ValueError("Android Agent is not available. Please implement phone_agent.agent_android module.")
-        
-        agent_config = AndroidAgentConfig(
-            serial_number=device_id,
-            lang=Config.DEFAULT_LANG
-        )
+            raise ValueError("Android Agent is not available.")
+        agent_config = AndroidAgentConfig(serial_number=device_id, lang=Config.DEFAULT_LANG)
         return AndroidPhoneAgent(model_config=model_config, agent_config=agent_config)
-    
     else:
         raise ValueError(f"Unsupported platform: {device.platform}")
 
@@ -332,19 +433,13 @@ def create_agent_for_device(device_id: str):
 def run_task():
     task_desc = request.json.get('task')
     device_id = request.json.get('device_id')
-    
     if not task_desc:
         return jsonify({"error": "No task provided"}), 400
-    
     if not device_id:
         return jsonify({"error": "No device_id provided"}), 400
     
     # Save to database
-    new_task = TaskHistory(
-        task_description=task_desc, 
-        status='running',
-        device_id=device_id
-    )
+    new_task = TaskHistory(task_description=task_desc, status='running', device_id=device_id)
     db.session.add(new_task)
     db.session.commit()
     task_id = new_task.id
@@ -368,7 +463,6 @@ def run_task():
                 log_queue.put(f"📝 开始执行任务: {t_desc}")
                 log_queue.put(f"📱 目标设备: {dev_id}")
                 
-                # 为设备创建专属 Agent
                 agent = create_agent_for_device(dev_id)
                 print(f"[Task {tid}] Agent initialized for {dev_id}")
                 log_queue.put("🤖 AI 正在分析任务并执行中，请稍候...")
@@ -483,43 +577,6 @@ def delete_test_case(case_id):
     case.is_active = False
     db.session.commit()
     return jsonify({'success': True})
-
-@app.route('/api/config', methods=['GET'])
-def get_config():
-    """获取系统配置"""
-    config_file = os.path.join(os.path.dirname(__file__), '..', 'config.json')
-    
-    if os.path.exists(config_file):
-        try:
-            with open(config_file, 'r', encoding='utf-8') as f:
-                config_data = json.load(f)
-                return jsonify({'config': config_data})
-        except Exception as e:
-            print(f"Error reading config: {e}")
-    
-    # 返回默认配置
-    return jsonify({
-        'config': {
-            'apiKey': '',
-            'modelType': 'glm-4',
-            'baseUrl': 'https://open.bigmodel.cn/api/paas/v4',
-            'temperature': 0.7,
-            'maxTokens': 2000
-        }
-    })
-
-@app.route('/api/config', methods=['POST'])
-def save_config():
-    """保存系统配置"""
-    data = request.json
-    config_file = os.path.join(os.path.dirname(__file__), '..', 'config.json')
-    
-    try:
-        with open(config_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        return jsonify({'success': True, 'message': '配置保存成功'})
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'配置保存失败: {str(e)}'}), 500
 
 @app.route('/api/test-cases/init', methods=['POST'])
 def init_test_cases():

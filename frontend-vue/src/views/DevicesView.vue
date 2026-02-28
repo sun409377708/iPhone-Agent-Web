@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
-import { fetchDevices, runTask, createLogStream, getScreenshot, getTestCases, initTestCases, startWDA, stopWDA, getWDAStatus } from '@/api'
+import { fetchDevices, runTask, createLogStream, getScreenshot, getMjpegStreamUrl, controlTap, controlSwipe, goHome, getTestCases, initTestCases, startWDA, stopWDA } from '@/api'
 import { Smartphone, RefreshCw, Play, Loader2, Monitor, TestTube, Plus, Power, PowerOff, Apple, Bot } from 'lucide-vue-next'
 
 const devices = ref([])
@@ -11,6 +11,10 @@ const logs = ref([])
 const isRunning = ref(false)
 const error = ref(null)
 const screenshot = ref(null)
+const streamUrl = ref(null)
+const streamError = ref(null)
+const streamImgRef = ref(null)
+const interactionBusy = ref(false)
 const showScreenshot = ref(false)
 const screenshotLoading = ref(false)
 const testCases = ref([])
@@ -18,6 +22,7 @@ const selectedCategory = ref('all')
 const showTestCases = ref(true)
 let logStream = null
 let screenshotInterval = null
+let pointerStart = null
 
 async function loadDevices() {
   loading.value = true
@@ -87,6 +92,7 @@ async function handleWDAControl(device) {
 }
 
 function selectDevice(device) {
+  stopScreenPreview()
   selectedDevice.value = device
   logs.value = []
   screenshot.value = null
@@ -149,7 +155,7 @@ function getLogColor(message) {
 }
 
 async function loadScreenshot() {
-  if (!selectedDevice.value) return
+  if (!selectedDevice.value || selectedDevice.value.platform !== 'Android') return
   
   try {
     screenshotLoading.value = true
@@ -164,19 +170,122 @@ async function loadScreenshot() {
   }
 }
 
+function startScreenPreview() {
+  if (!selectedDevice.value) return
+
+  streamError.value = null
+  screenshot.value = null
+
+  if (selectedDevice.value.platform === 'iOS') {
+    streamUrl.value = `${getMjpegStreamUrl(selectedDevice.value.id)}?t=${Date.now()}`
+    return
+  }
+
+  loadScreenshot()
+  screenshotInterval = setInterval(loadScreenshot, 2000)
+}
+
+function stopScreenPreview() {
+  if (screenshotInterval) {
+    clearInterval(screenshotInterval)
+    screenshotInterval = null
+  }
+  streamUrl.value = null
+  streamError.value = null
+}
+
+function handleStreamError() {
+  streamError.value = '实时画面连接失败，请确认 WDA 与 9100 端口转发已就绪'
+}
+
+async function handleGoHome() {
+  if (!selectedDevice.value || selectedDevice.value.platform !== 'iOS') {
+    alert('请先选择 iOS 设备')
+    return
+  }
+  try {
+    await goHome(selectedDevice.value.id)
+  } catch (err) {
+    console.error('Go home failed:', err)
+    alert(`回主屏失败: ${err.message}`)
+  }
+}
+
+function clamp01(v) {
+  return Math.max(0, Math.min(1, v))
+}
+
+function getImageRatioFromPointer(event) {
+  if (!streamImgRef.value) return null
+  const rect = streamImgRef.value.getBoundingClientRect()
+  if (rect.width <= 0 || rect.height <= 0) return null
+  const xRatio = clamp01((event.clientX - rect.left) / rect.width)
+  const yRatio = clamp01((event.clientY - rect.top) / rect.height)
+  return { xRatio, yRatio }
+}
+
+function onStreamPointerDown(event) {
+  if (!selectedDevice.value || selectedDevice.value.platform !== 'iOS') return
+  if (event.button !== 0) return
+  const point = getImageRatioFromPointer(event)
+  if (!point) return
+  pointerStart = point
+}
+
+async function onStreamPointerUp(event) {
+  if (!selectedDevice.value || selectedDevice.value.platform !== 'iOS') return
+  if (!pointerStart || interactionBusy.value) {
+    pointerStart = null
+    return
+  }
+
+  const point = getImageRatioFromPointer(event)
+  if (!point) {
+    pointerStart = null
+    return
+  }
+
+  const dx = point.xRatio - pointerStart.xRatio
+  const dy = point.yRatio - pointerStart.yRatio
+  const distance = Math.sqrt(dx * dx + dy * dy)
+  const isSwipe = distance > 0.02
+
+  interactionBusy.value = true
+  try {
+    if (isSwipe) {
+      await controlSwipe(
+        selectedDevice.value.id,
+        pointerStart.xRatio,
+        pointerStart.yRatio,
+        point.xRatio,
+        point.yRatio
+      )
+    } else {
+      await controlTap(selectedDevice.value.id, point.xRatio, point.yRatio)
+    }
+  } catch (err) {
+    console.error('Control action failed:', err)
+  } finally {
+    pointerStart = null
+    interactionBusy.value = false
+  }
+}
+
+function onStreamPointerCancel() {
+  pointerStart = null
+}
+
 function toggleScreenshot() {
+  if (!selectedDevice.value && !showScreenshot.value) {
+    alert('请先在上方设备列表中选择一个设备')
+    return
+  }
+
   showScreenshot.value = !showScreenshot.value
   if (showScreenshot.value) {
-    // 立即加载一次截图
-    loadScreenshot()
-    // 每2秒自动刷新截图
-    screenshotInterval = setInterval(loadScreenshot, 2000)
+    startScreenPreview()
   } else {
-    // 停止自动刷新
-    if (screenshotInterval) {
-      clearInterval(screenshotInterval)
-      screenshotInterval = null
-    }
+    stopScreenPreview()
   }
 }
 
@@ -208,10 +317,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  // 清理定时器
-  if (screenshotInterval) {
-    clearInterval(screenshotInterval)
-  }
+  stopScreenPreview()
   // 清理日志流
   if (logStream) {
     logStream.close()
@@ -436,22 +542,56 @@ onUnmounted(() => {
               <Monitor class="w-5 h-5 text-primary" />
               实时屏幕投屏
             </h3>
-            <button
-              @click="toggleScreenshot"
-              class="px-3 py-1 text-sm rounded-lg transition-colors"
-              :class="showScreenshot ? 'bg-red-100 text-red-700 hover:bg-red-200' : 'bg-primary/10 text-primary hover:bg-primary/20'"
-            >
-              {{ showScreenshot ? '停止' : '开始' }}
-            </button>
+            <div class="flex items-center gap-2">
+              <button
+                v-if="selectedDevice?.platform === 'iOS'"
+                @click="handleGoHome"
+                class="px-3 py-1 text-sm rounded-lg transition-colors bg-sky-100 text-sky-700 hover:bg-sky-200"
+              >
+                回到主屏
+              </button>
+              <button
+                @click="toggleScreenshot"
+                class="px-3 py-1 text-sm rounded-lg transition-colors"
+                :class="showScreenshot ? 'bg-red-100 text-red-700 hover:bg-red-200' : 'bg-primary/10 text-primary hover:bg-primary/20'"
+              >
+                {{ showScreenshot ? '停止' : '开始' }}
+              </button>
+            </div>
           </div>
 
           <div class="flex justify-center items-center min-h-[400px]">
             <div v-if="showScreenshot">
-              <div v-if="screenshot" class="relative">
+              <div v-if="!selectedDevice" class="text-center text-muted-foreground">
+                <Smartphone class="w-12 h-12 mx-auto mb-3 opacity-40" />
+                <p>请先选择一个设备，再开始投屏</p>
+              </div>
+              <div v-else-if="selectedDevice?.platform === 'iOS'" class="w-full">
+                <div v-if="streamUrl && !streamError" class="relative">
+                  <img
+                    ref="streamImgRef"
+                    :src="streamUrl"
+                    alt="设备实时流"
+                    class="w-full max-w-[320px] h-auto border border-gray-300 rounded-lg shadow-lg mx-auto"
+                    @error="handleStreamError"
+                    @dragstart.prevent
+                    @pointerdown="onStreamPointerDown"
+                    @pointerup="onStreamPointerUp"
+                    @pointercancel="onStreamPointerCancel"
+                  />
+                  <div class="mt-2 text-center text-xs text-muted-foreground">
+                    iOS MJPEG 实时流（支持点击与拖拽控制）
+                  </div>
+                </div>
+                <div v-else class="text-center text-red-500 text-sm">
+                  <p>{{ streamError || '正在连接实时画面...' }}</p>
+                </div>
+              </div>
+              <div v-else-if="screenshot" class="relative">
                 <img 
                   :src="screenshot" 
                   alt="设备屏幕" 
-                  class="w-full h-auto border border-gray-300 rounded-lg shadow-lg"
+                  class="w-full max-w-[320px] h-auto border border-gray-300 rounded-lg shadow-lg mx-auto"
                 />
                 <div class="mt-2 text-center text-xs text-muted-foreground">
                   每 2 秒自动刷新

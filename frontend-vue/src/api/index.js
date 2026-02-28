@@ -74,6 +74,69 @@ export async function getScreenshot(deviceId) {
   return response.json()
 }
 
+export function getMjpegStreamUrl(deviceId) {
+  if (!deviceId) return null
+  return `${API_BASE_URL}/api/devices/${deviceId}/mjpeg`
+}
+
+export async function controlTap(deviceId, xRatio, yRatio) {
+  const response = await fetch(`${API_BASE_URL}/api/devices/${deviceId}/control/tap`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ x_ratio: xRatio, y_ratio: yRatio }),
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(text || 'Failed to tap')
+  }
+  return response.json()
+}
+
+export async function controlSwipe(deviceId, startXRatio, startYRatio, endXRatio, endYRatio, durationMs = 350) {
+  const response = await fetch(`${API_BASE_URL}/api/devices/${deviceId}/control/swipe`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      start_x_ratio: startXRatio,
+      start_y_ratio: startYRatio,
+      end_x_ratio: endXRatio,
+      end_y_ratio: endYRatio,
+      duration_ms: durationMs,
+    }),
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(text || 'Failed to swipe')
+  }
+  return response.json()
+}
+
+export async function wakeScreen(deviceId) {
+  const response = await fetch(`${API_BASE_URL}/api/devices/${deviceId}/control/wake`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(text || 'Failed to wake screen')
+  }
+  return response.json()
+}
+
+export async function goHome(deviceId) {
+  const response = await fetch(`${API_BASE_URL}/api/devices/${deviceId}/control/home`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(text || 'Failed to go home')
+  }
+  return response.json()
+}
+
 // ==================== 测试用例管理 ====================
 
 export async function getTestCases(category = null) {

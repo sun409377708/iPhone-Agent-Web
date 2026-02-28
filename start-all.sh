@@ -42,6 +42,16 @@ else
     echo -e "  ${GREEN}✅ iproxy 已在运行 (PID: $IPROXY_PID)${NC}"
 fi
 
+IPROXY_MJPEG_PID=$(pgrep -f "iproxy 9100 9100 -u $DEVICE_UDID" || true)
+if [ -z "$IPROXY_MJPEG_PID" ]; then
+    echo "  启动 iproxy 9100 9100 -u $DEVICE_UDID (MJPEG)..."
+    nohup iproxy 9100 9100 -u $DEVICE_UDID > /dev/null 2>&1 &
+    sleep 2
+    echo -e "  ${GREEN}✅ MJPEG iproxy 已启动${NC}"
+else
+    echo -e "  ${GREEN}✅ MJPEG iproxy 已在运行 (PID: $IPROXY_MJPEG_PID)${NC}"
+fi
+
 # 2. 检查并启动 WebDriverAgent
 echo -e "${YELLOW}[2/4] 检查 WebDriverAgent...${NC}"
 if curl -s http://localhost:8100/status > /dev/null 2>&1; then
@@ -121,6 +131,7 @@ echo -e "${GREEN}========================================${NC}"
 echo ""
 echo -e "${BLUE}📊 服务状态：${NC}"
 echo "  • iproxy:        运行中 (8100 -> 8100)"
+echo "  • MJPEG iproxy:  运行中 (9100 -> 9100)"
 echo "  • WebDriverAgent: http://localhost:8100"
 echo "  • Flask 后端:    http://127.0.0.1:5001"
 echo "  • Vue 前端:      http://localhost:5173"

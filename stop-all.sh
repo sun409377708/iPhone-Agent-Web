@@ -62,6 +62,15 @@ else
     echo "  iproxy 未运行"
 fi
 
+IPROXY_MJPEG_PID=$(pgrep -f "iproxy 9100 9100" || true)
+if [ ! -z "$IPROXY_MJPEG_PID" ]; then
+    echo "  停止 MJPEG iproxy (PID: $IPROXY_MJPEG_PID)..."
+    kill -9 $IPROXY_MJPEG_PID 2>/dev/null || true
+    echo -e "  ${GREEN}✅ MJPEG iproxy 已停止${NC}"
+else
+    echo "  MJPEG iproxy 未运行"
+fi
+
 # 注意：不停止 WebDriverAgent，因为它可能在 Xcode 中运行
 echo ""
 echo -e "${YELLOW}⚠️  注意：${NC}"
